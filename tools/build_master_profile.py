@@ -105,6 +105,10 @@ def merge_education(li_edu: list, cv_edu: list) -> list:
 
     for i, cv_entry in enumerate(cv_edu):
         if i not in used_cv_indices:
+            # Skip garbled entries where institution looks like a bullet point or skill
+            inst = cv_entry.get("institution", "")
+            if inst.startswith("●") or inst.startswith("○") or inst.startswith("•"):
+                continue
             merged.append(cv_entry)
 
     return merged
@@ -200,7 +204,15 @@ def build_master_profile(
         c for c in cv_certs if c["name"].lower() not in cert_names
     ]
 
-    languages = li.get("languages", []) or []
+    li_langs = li.get("languages", []) or []
+    cv_langs = cv.get("languages", []) or []
+    # Clean bullet prefixes from CV language names
+    cleaned_cv_langs = [
+        {**l, "name": l["name"].lstrip("● ").strip()} for l in cv_langs
+    ]
+    li_lang_names = {l["name"].lower() for l in li_langs}
+    extra_cv_langs = [l for l in cleaned_cv_langs if l["name"].lower() not in li_lang_names]
+    languages = li_langs + extra_cv_langs
     projects = cv.get("projects", []) or []
 
     profile = {

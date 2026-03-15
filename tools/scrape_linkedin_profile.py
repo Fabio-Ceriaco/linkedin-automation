@@ -14,7 +14,6 @@ Usage:
 import json
 import logging
 import os
-import re
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -68,100 +67,94 @@ def safe_text(page: Page, selector: str, default: str = "") -> str:
 
 
 def scrape_experience(page: Page) -> list:
-    items = []
-    cards = page.query_selector_all("#experience ~ .pvs-list__outer-container li.artdeco-list__item")
-    if not cards:
-        cards = page.query_selector_all("section[id*='experience'] li")
-    for card in cards:
-        text = card.inner_text().strip()
-        if not text or len(text) < 5:
-            continue
-        lines = [l.strip() for l in text.split("\n") if l.strip()]
-        entry = {
-            "title": lines[0] if len(lines) > 0 else "",
-            "company": lines[1] if len(lines) > 1 else "",
-            "date_range": lines[2] if len(lines) > 2 else "",
-            "location": lines[3] if len(lines) > 3 else "",
-            "description": " ".join(lines[4:]) if len(lines) > 4 else "",
-            "source": "linkedin",
+    return page.evaluate("""() => {
+        const section = document.querySelector("div[componentkey*='ExperienceTopLevelSection'] section");
+        if (!section) return [];
+        const jobs = [];
+        const links = section.querySelectorAll("a[href*='/edit/forms/position/']");
+        for (const link of links) {
+            const ps = link.querySelectorAll('p');
+            const title = ps[0]?.textContent?.trim() || '';
+            if (!title) continue;
+            const companyRaw = ps[1]?.textContent?.trim() || '';
+            const company = companyRaw.split('\\u00b7')[0].trim();
+            const dateRange = ps[2]?.textContent?.trim() || '';
+            const location = ps[3]?.textContent?.trim() || '';
+            const descEl = link.parentElement?.querySelector('span[data-testid="expandable-text-box"]');
+            const description = descEl?.textContent?.trim() || '';
+            jobs.push({ title, company, date_range: dateRange, location, description, source: 'linkedin' });
         }
-        items.append(entry)
-    return items
+        return jobs;
+    }""")
 
 
 def scrape_education(page: Page) -> list:
-    items = []
-    cards = page.query_selector_all("#education ~ .pvs-list__outer-container li.artdeco-list__item")
-    if not cards:
-        cards = page.query_selector_all("section[id*='education'] li")
-    for card in cards:
-        text = card.inner_text().strip()
-        if not text or len(text) < 5:
-            continue
-        lines = [l.strip() for l in text.split("\n") if l.strip()]
-        entry = {
-            "institution": lines[0] if len(lines) > 0 else "",
-            "degree": lines[1] if len(lines) > 1 else "",
-            "field_of_study": lines[2] if len(lines) > 2 else "",
-            "date_range": lines[3] if len(lines) > 3 else "",
-            "source": "linkedin",
+    return page.evaluate("""() => {
+        const section = document.querySelector("div[componentkey*='EducationTopLevelSection'] section");
+        if (!section) return [];
+        const items = [];
+        // Education edit links are under /details/education/edit/forms/
+        const links = section.querySelectorAll("a[href*='/details/education/edit/forms/']");
+        for (const link of links) {
+            const ps = link.querySelectorAll('p');
+            const institution = ps[0]?.textContent?.trim() || '';
+            if (!institution) continue;
+            const degree = ps[1]?.textContent?.trim() || '';
+            const field = ps[2]?.textContent?.trim() || '';
+            const dateRange = ps[3]?.textContent?.trim() || '';
+            items.push({ institution, degree, field_of_study: field, date_range: dateRange, source: 'linkedin' });
         }
-        items.append(entry)
-    return items
+        return items;
+    }""")
 
 
 def scrape_skills(page: Page) -> list:
-    skills = []
-    # Try the skills section
-    cards = page.query_selector_all("#skills ~ .pvs-list__outer-container li.artdeco-list__item")
-    if not cards:
-        cards = page.query_selector_all("section[id*='skills'] li")
-    for card in cards:
-        text = card.inner_text().strip()
-        if not text:
-            continue
-        name = text.split("\n")[0].strip()
-        if name:
-            skills.append({"name": name, "endorsements": None, "source": "linkedin"})
-    return skills
+    names = page.evaluate("""() => {
+        const items = document.querySelectorAll("div[componentkey*='profile.skill(']");
+        const skills = [];
+        for (const item of items) {
+            const p = item.querySelector('p');
+            const name = p?.textContent?.trim();
+            if (name && name.length > 1) skills.push(name);
+        }
+        return [...new Set(skills)];
+    }""")
+    return [{"name": n, "endorsements": None, "source": "linkedin"} for n in names]
 
 
 def scrape_certifications(page: Page) -> list:
-    items = []
-    cards = page.query_selector_all(
-        "#licenses_and_certifications ~ .pvs-list__outer-container li.artdeco-list__item"
-    )
-    if not cards:
-        cards = page.query_selector_all("section[id*='certif'] li")
-    for card in cards:
-        text = card.inner_text().strip()
-        if not text:
-            continue
-        lines = [l.strip() for l in text.split("\n") if l.strip()]
-        entry = {
-            "name": lines[0] if len(lines) > 0 else "",
-            "issuer": lines[1] if len(lines) > 1 else "",
-            "issued_date": lines[2] if len(lines) > 2 else "",
-            "source": "linkedin",
+    return page.evaluate("""() => {
+        const section = document.querySelector("div[componentkey*='CertificationTopLevel'] section");
+        if (!section) return [];
+        const items = [];
+        const links = section.querySelectorAll("a[href*='/edit/forms/certification/']");
+        for (const link of links) {
+            const ps = link.querySelectorAll('p');
+            const name = ps[0]?.textContent?.trim() || '';
+            if (!name) continue;
+            const issuer = ps[1]?.textContent?.trim() || '';
+            const issued_date = ps[2]?.textContent?.trim() || '';
+            items.push({ name, issuer, issued_date, source: 'linkedin' });
         }
-        items.append(entry)
-    return items
+        return items;
+    }""")
 
 
 def scrape_languages(page: Page) -> list:
-    langs = []
-    cards = page.query_selector_all(
-        "#languages ~ .pvs-list__outer-container li.artdeco-list__item"
-    )
-    for card in cards:
-        text = card.inner_text().strip()
-        if not text:
-            continue
-        lines = [l.strip() for l in text.split("\n") if l.strip()]
-        langs.append({
-            "name": lines[0] if len(lines) > 0 else "",
-            "proficiency": lines[1] if len(lines) > 1 else None,
-        })
+    return page.evaluate("""() => {
+        const section = document.querySelector("div[componentkey*='LanguageTopLevel'] section");
+        if (!section) return [];
+        const langs = [];
+        const links = section.querySelectorAll("a[href*='/edit/forms/language/']");
+        for (const link of links) {
+            const ps = link.querySelectorAll('p');
+            const name = ps[0]?.textContent?.trim() || '';
+            if (!name) continue;
+            const proficiency = ps[1]?.textContent?.trim() || null;
+            langs.push({ name, proficiency });
+        }
+        return langs;
+    }""")
     return langs
 
 
@@ -206,12 +199,19 @@ def scrape_linkedin_profile(
 
         scroll_to_bottom(page)
 
-        # Basic identity
-        name = safe_text(page, "h1")
-        headline = safe_text(page, ".text-body-medium.break-words")
-        location = safe_text(page, ".pb2 .text-body-small.inline.t-black--light.break-words")
-        about = safe_text(page, "#about ~ .pvs-list__outer-container .visually-hidden") or \
-                safe_text(page, "section[id*='about'] .pv-shared-text-with-see-more span[aria-hidden='true']")
+        # Basic identity — uses componentkey-based selectors (stable across LinkedIn redesigns)
+        name = safe_text(page, "div[componentkey*='Topcard'] h2")
+        # Headline and location: first two meaningful p elements after the name h2 in Topcard
+        headline, location = page.evaluate("""() => {
+            const topcard = document.querySelector("div[componentkey*='Topcard']");
+            if (!topcard) return ['', ''];
+            const allP = Array.from(topcard.querySelectorAll('p'));
+            const texts = allP
+                .map(p => p.textContent.trim())
+                .filter(t => t.length > 3 && t !== '.' && !t.match(/^\\d+ connections/));
+            return [texts[0] || '', texts[1] || ''];
+        }""")
+        about = safe_text(page, "div[componentkey*='About'] span[data-testid='expandable-text-box']")
 
         log.info("Name: %s | Headline: %s", name, headline)
 

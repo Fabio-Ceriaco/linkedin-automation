@@ -68,9 +68,16 @@ def check_for_wall(page: Page) -> None:
             "Re-run: python tools/save_linkedin_session.py"
         )
     if "captcha" in url.lower() or page.query_selector("[id*='captcha']"):
-        raise CaptchaError(
-            "CAPTCHA detected. Saved partial results. Resolve manually and retry."
+        log.warning(
+            "CAPTCHA detected — solve it in the browser window. "
+            "Playwright Inspector will open; click Resume when done."
         )
+        page.pause()  # Opens Playwright Inspector; user clicks Resume to continue
+        # Re-check after user resolves
+        if "captcha" in page.url.lower() or page.query_selector("[id*='captcha']"):
+            raise CaptchaError(
+                "CAPTCHA still present after manual solve. Saved partial results."
+            )
 
 
 def scroll_job_list(page: Page, target_count: int) -> None:
@@ -219,7 +226,7 @@ def scrape_jobs(
     seen_ids: set = set()
 
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True, slow_mo=500)
+        browser = p.chromium.launch(headless=False, slow_mo=500)
         context = browser.new_context(
             user_agent=(
                 "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "

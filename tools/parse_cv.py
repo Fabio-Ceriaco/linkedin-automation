@@ -36,7 +36,7 @@ log = logging.getLogger("parse_cv")
 # Section header keywords (case-insensitive)
 SECTION_HEADERS = {
     "experience": re.compile(
-        r"^(work\s+)?experience|employment|professional\s+background|career", re.I
+        r"^(work\s+|professional\s+)?experience|employment|professional\s+background|career", re.I
     ),
     "education": re.compile(r"^education|academic|qualifications?|degrees?", re.I),
     "skills": re.compile(r"^(technical\s+)?skills|competenc|technologies|tools", re.I),
@@ -64,6 +64,79 @@ class CVParseError(Exception):
     pass
 
 
+def _find_column_split(words, page_width: float) -> float | None:
+    """Find the x-coordinate splitting two columns using word-start bimodal detection.
+
+    Looks for the largest gap between sorted x0 values in the middle 15-75% of the
+    page width. Header lines that span the full width are excluded by ignoring words
+    whose x1 exceeds 80% of page width.
+    """
+    if not words:
+        return None
+
+    lo = page_width * 0.15
+    hi = page_width * 0.75
+    max_x1 = page_width * 0.80
+
+    # Only consider words that are body text (not full-width header spans)
+    x0s = sorted(
+        w["x0"] for w in words if lo <= w["x0"] <= hi and w["x1"] <= max_x1
+    )
+    if len(x0s) < 6:
+        return None
+
+    # Find the largest gap between consecutive x0 values
+    best_gap = 0.0
+    split = None
+    for a, b in zip(x0s, x0s[1:]):
+        if b - a > best_gap:
+            best_gap = b - a
+            split = (a + b) / 2
+
+    # Require a meaningful gap (at least 8pt)
+    if split is None or best_gap < 8:
+        return None
+    return split
+
+
+def _extract_page_text(page) -> str:
+    """Extract text from a page, handling two-column layouts by x-position."""
+    words = page.extract_words()
+    if not words:
+        return ""
+
+    split_x = _find_column_split(words, page.width)
+
+    def words_to_text(word_list):
+        if not word_list:
+            return ""
+        word_list = sorted(word_list, key=lambda w: (round(w["top"] / 3), w["x0"]))
+        lines = []
+        current_top = None
+        current_line = []
+        for w in word_list:
+            t = round(w["top"] / 3)
+            if current_top is None or t != current_top:
+                if current_line:
+                    lines.append(" ".join(current_line))
+                current_line = [w["text"]]
+                current_top = t
+            else:
+                current_line.append(w["text"])
+        if current_line:
+            lines.append(" ".join(current_line))
+        return "\n".join(lines)
+
+    if split_x is None:
+        return page.extract_text() or ""
+
+    left_words = [w for w in words if w["x1"] <= split_x]
+    right_words = [w for w in words if w["x0"] >= split_x]
+    # Right column first: contains identity/experience/education (main CV content).
+    # Left column appended after: contains skills/languages (supplementary).
+    return words_to_text(right_words) + "\n" + words_to_text(left_words)
+
+
 def extract_text(cv_path: str) -> str:
     path = Path(cv_path)
     if not path.exists():
@@ -74,7 +147,7 @@ def extract_text(cv_path: str) -> str:
     pages_text = []
     with pdfplumber.open(cv_path) as pdf:
         for page in pdf.pages:
-            text = page.extract_text()
+            text = _extract_page_text(page)
             if text:
                 pages_text.append(text)
 
@@ -140,19 +213,27 @@ def parse_experience(lines: list[str]) -> list[dict]:
         if not line.strip():
             continue
         date_match = DATE_PATTERN.search(line)
-        # Heuristic: a line with a date that's short is likely a job header
-        if date_match and len(line) < 80:
+        if date_match and len(line) < 100:
             if current:
                 entries.append(current)
+            # Title may precede the date on the same line (e.g. "Engineer May 1, 2022 – Dec 2024")
+            # Strip the matched date and any trailing month/day fragment before it
+            before_date = line[:date_match.start()]
+            # Remove trailing partial date: optional month name + optional day number + punctuation
+            before_date = re.sub(
+                r"[\s,]*(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*[\s,]*\d*[\s,]*$",
+                "", before_date, flags=re.I
+            )
+            title = before_date.strip().rstrip("–-,").strip()
+            date_range = line[date_match.start():].strip()
             current = {
-                "title": "",
+                "title": title,
                 "company": "",
-                "date_range": line.strip(),
+                "date_range": date_range,
                 "description": "",
                 "source": "cv",
             }
         elif current is None:
-            # First non-date line is the job title
             current = {
                 "title": line.strip(),
                 "company": "",
@@ -203,10 +284,12 @@ def parse_education(lines: list[str]) -> list[dict]:
 def parse_skills(lines: list[str]) -> list[dict]:
     skills = []
     for line in lines:
+        # Strip leading bullet characters (●, ○, •, ·) and whitespace
+        clean = re.sub(r"^[●○•·\-\s]+", "", line).strip()
         # Split by common delimiters: comma, pipe, bullet, semicolon
-        parts = re.split(r"[,|•·;/]+", line)
+        parts = re.split(r"[,|•·;/]+", clean)
         for part in parts:
-            name = part.strip().strip("–-•·")
+            name = re.sub(r"^[●○•·\-\s]+", "", part).strip().rstrip("–-")
             if name and len(name) > 1 and len(name) < 60:
                 skills.append({"name": name, "endorsements": None, "source": "cv"})
     return skills
